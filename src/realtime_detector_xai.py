@@ -5,6 +5,7 @@ import joblib
 import pandas as pd
 import numpy as np
 from alert_logger import log_alert
+from xai_explainer import explain_prediction
 # Load trained model
 model = joblib.load("model/intrusion_model.pkl")
 
@@ -207,11 +208,18 @@ def process_packet(packet):
             class_names = model.classes_
             confidence = float(np.max(probabilities)) * 100
 
+            # print(f"Checked flow: {trace_info['source_ip']} -> {trace_info['destination_ip']} | Prediction: {prediction}")
+
             # only alert on suspicious traffic
             if prediction != "Normal Traffic":
                 if prediction != "Normal Traffic":
 
-                    top_features = explain_prediction(feature_row_dict, top_n=5)
+                    top_features = explain_prediction(feature_df)
+                    print("\nSHAP Explanation:")
+                    for feature, value in top_features:
+                        print(f"{feature}: {value:.4f}")
+
+                    feature_names_only = [feature for feature, value in top_features]
 
                     print("\n🚨 INTRUSION ALERT 🚨")
                     print(f"Prediction: {prediction}")
@@ -228,11 +236,13 @@ def process_packet(packet):
                     print(f"Packets in Flow: {flow['total_fwd_packets']}")
                     print(f"Bytes in Flow: {flow['total_fwd_bytes']}")
 
-                    print("\nTop Trigger Features:")
-                    for name, value, importance, score in top_features:
-                        print(f"- {name}: value={value:.2f}, importance={importance:.4f}")
+                    top_features = explain_prediction(feature_df)
 
-                    feature_names_only = [name for name, value, importance, score in top_features]
+                    print("\nSHAP Explanation:")
+                    for feature, value in top_features:
+                        print(f"{feature}: {value:.4f}")
+
+                    feature_names_only = [feature for feature, value in top_features]
 
 
                 log_alert(

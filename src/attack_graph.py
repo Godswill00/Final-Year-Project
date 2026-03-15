@@ -13,37 +13,44 @@ if data.empty:
     print("Alert file exists but contains no alerts yet.")
     exit()
 
-print("=== ALERT RELATIONSHIP SUMMARY ===\n")
-
-source_attack_counts = data.groupby("source_ip").size().sort_values(ascending=False)
-print("Top Alert Sources:")
-print(source_attack_counts)
-print("\n" + "=" * 50 + "\n")
+print("=== ATTACK CORRELATION ENGINE ===\n")
 
 source_to_targets = defaultdict(set)
 source_to_attack_types = defaultdict(set)
+source_to_alert_count = defaultdict(int)
+source_to_total_confidence = defaultdict(float)
 
 for _, row in data.iterrows():
     source_ip = row["source_ip"]
     destination_ip = row["destination_ip"]
     attack_type = row["attack_type"]
+    confidence = float(row["confidence"])
 
     source_to_targets[source_ip].add(destination_ip)
     source_to_attack_types[source_ip].add(attack_type)
+    source_to_alert_count[source_ip] += 1
+    source_to_total_confidence[source_ip] += confidence
 
-print("Source → Target Relationships:")
-for source_ip, targets in source_to_targets.items():
-    print(f"{source_ip} attacked {len(targets)} target(s): {', '.join(targets)}")
+print("Correlated Attack Sources:\n")
 
-print("\n" + "=" * 50 + "\n")
+for source_ip in source_to_alert_count:
+    alert_count = source_to_alert_count[source_ip]
+    targets = source_to_targets[source_ip]
+    attack_types = source_to_attack_types[source_ip]
+    avg_confidence = source_to_total_confidence[source_ip] / alert_count
 
-print("Source → Attack Type Relationships:")
-for source_ip, attack_types in source_to_attack_types.items():
-    print(f"{source_ip} is associated with: {', '.join(attack_types)}")
-
-print("\n" + "=" * 50 + "\n")
-
-print("Potential Multi-Target Attackers:")
-for source_ip, targets in source_to_targets.items():
+    print(f"Source IP: {source_ip}")
+    print(f"Total Alerts: {alert_count}")
+    print(f"Targets Hit: {len(targets)}")
+    print(f"Target List: {', '.join(targets)}")
+    print(f"Attack Types: {', '.join(attack_types)}")
+    print(f"Average Confidence: {avg_confidence:.2f}")
+    
     if len(targets) > 1:
-        print(f"⚠ {source_ip} targeted multiple destinations: {', '.join(targets)}")
+        print("Assessment: Possible multi-target attack campaign")
+    elif alert_count > 3:
+        print("Assessment: Repeated suspicious behavior from same source")
+    else:
+        print("Assessment: Isolated suspicious activity")
+
+    print("-" * 50)

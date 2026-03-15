@@ -1,12 +1,24 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import pandas as pd
+from pathlib import Path
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Load the trained model
 model = joblib.load("model/intrusion_model.pkl")
+ALERTS_FILE = Path("data/intrusion_alerts.csv")
+PROFILES_FILE = Path("data/attacker_profiles.csv")
 
 
 class TrafficInput(BaseModel):
@@ -126,6 +138,126 @@ def predict_attack(traffic: TrafficInput):
         "Idle Min": traffic.Idle_Min
     }])
 
-    prediction = model.predict(input_data)
+    prediction = model.predict(input_data)[0]
 
-    return {"predicted_attack": prediction[0]}
+    probabilities = model.predict_proba(input_data)[0]
+    confidence = float(max(probabilities)) * 100
+
+    feature_importances = model.feature_importances_
+    feature_names = input_data.columns
+
+    feature_scores = []
+    for feature_name, importance in zip(feature_names, feature_importances):
+        value = input_data.iloc[0][feature_name]
+        score = abs(value) * importance
+        feature_scores.append((feature_name, float(value), float(importance), float(score)))
+
+    feature_scores.sort(key=lambda x: x[3], reverse=True)
+    top_features = [item[0] for item in feature_scores[:5]]
+
+    return {
+        "predicted_attack": prediction,
+        "confidence": round(confidence, 2),
+        "top_features": top_features
+    }
+
+@app.get("/alerts")
+def get_alerts():
+    if not ALERTS_FILE.exists():
+        return {"message": "No alerts file found yet.", "alerts": []}
+
+    data = pd.read_csv(ALERTS_FILE)
+
+    if data.empty:
+        return {"message": "Alerts file is empty.", "alerts": []}
+
+    return {"alerts": data.to_dict(orient="records")}
+
+
+@app.get("/attacker-profiles")
+def get_attacker_profiles():
+    if not PROFILES_FILE.exists():
+        return {"message": "No attacker profiles file found yet.", "profiles": []}
+
+    data = pd.read_csv(PROFILES_FILE)
+
+    if data.empty:
+        return {"message": "Attacker profiles file is empty.", "profiles": []}
+
+    return {"profiles": data.to_dict(orient="records")}
+
+
+@app.get("/attack-summary")
+def get_attack_summary():
+    if not PROFILES_FILE.exists():
+        return {
+            "total_attackers": 0,
+            "high_severity": 0,
+            "medium_severity": 0,
+            "low_severity": 0
+        }
+
+    data = pd.read_csv(PROFILES_FILE)
+
+    if data.empty:
+        return {
+            "total_attackers": 0,
+            "high_severity": 0,
+            "medium_severity": 0,
+            "low_severity": 0
+        }
+
+    return {
+        "total_attackers": len(data),
+        "high_severity": int((data["campaign_severity"] == "HIGH").sum()),
+        "medium_severity": int((data["campaign_severity"] == "MEDIUM").sum()),
+        "low_severity": int((data["campaign_severity"] == "LOW").sum())
+    }
+
+@app.get("/attack-graph")
+def get_attack_graph():
+    if not ALERTS_FILE.exists():
+        return {"nodes": [], "edges": []}
+
+    data = pd.read_csv(ALERTS_FILE)
+
+    if data.empty:
+        return {"nodes": [], "edges": []}
+
+    nodes = {}
+    edges = []
+
+    for _, row in data.iterrows():
+        source_ip = row["source_ip"]
+        destination_ip = row["destination_ip"]
+        attack_type = row["attack_type"]
+        confidence = float(row["confidence"])
+
+        if source_ip not in nodes:
+            nodes[source_ip] = {
+                "id": source_ip,
+                "label": source_ip,
+                "type": "source"
+            }
+
+        if destination_ip not in nodes:
+            nodes[destination_ip] = {
+                "id": destination_ip,
+                "label": destination_ip,
+                "type": "destination"
+            }
+
+        edges.append({
+            "source": source_ip,
+            "target": destination_ip,
+            "attack_type": attack_type,
+            "confidence": confidence
+        })
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges
+    }
+    # prediction = model.predict(input_data)
+
+    # return {"predicted_attack": prediction[0]}
