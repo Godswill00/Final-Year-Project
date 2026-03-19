@@ -13,6 +13,7 @@ import AttackerProfiles from "./AttackerProfiles";
 import AlertStream from "./AlertStream";
 
 function App() {
+  const [activeSection, setActiveSection] = useState("dashboard");
   const [summary, setSummary] = useState({});
   const [alerts, setAlerts] = useState([]);
   const [displayedAlerts, setDisplayedAlerts] = useState([]);
@@ -30,8 +31,6 @@ function App() {
   ];
 
   const runTraceback = async (sourceIp, destinationIp, attackType) => {
-    console.log("runTraceback called", sourceIp, destinationIp, attackType);
-
     try {
       setXaiError("");
       setXaiResult(null);
@@ -44,13 +43,16 @@ function App() {
 
       if (res.data.error) {
         setXaiError(res.data.error);
+        setActiveSection("traceback");
         return;
       }
 
       setXaiResult(res.data);
+      setActiveSection("traceback");
     } catch (err) {
       console.error(err);
       setXaiError("Traceback failed");
+      setActiveSection("traceback");
     }
   };
 
@@ -98,10 +100,46 @@ function App() {
       <div className="sidebar">
         <h2>🛡️ TraceGuard</h2>
         <p className="slogan">Advanced Intelligence • Proven Evidence</p>
-        <div className="sidebar-item">Dashboard</div>
-        <div className="sidebar-item">Alerts</div>
-        <div className="sidebar-item">Topology</div>
-        <div className="sidebar-item">Traceback</div>
+
+        <button
+          className={`sidebar-item ${
+            activeSection === "dashboard" ? "active" : ""
+          }`}
+          onClick={() => setActiveSection("dashboard")}
+          type="button"
+        >
+          Dashboard
+        </button>
+
+        <button
+          className={`sidebar-item ${
+            activeSection === "alerts" ? "active" : ""
+          }`}
+          onClick={() => setActiveSection("alerts")}
+          type="button"
+        >
+          Alerts
+        </button>
+
+        <button
+          className={`sidebar-item ${
+            activeSection === "topology" ? "active" : ""
+          }`}
+          onClick={() => setActiveSection("topology")}
+          type="button"
+        >
+          Topology
+        </button>
+
+        <button
+          className={`sidebar-item ${
+            activeSection === "traceback" ? "active" : ""
+          }`}
+          onClick={() => setActiveSection("traceback")}
+          type="button"
+        >
+          Traceback
+        </button>
       </div>
 
       <div className="main">
@@ -110,80 +148,78 @@ function App() {
           <div className="status">● System Operational</div>
         </div>
 
-        <div className="cards">
-          <div className="card">
-            <h4>Total Attackers</h4>
-            <h2>{summary.total_attackers || 0}</h2>
-            <div className="progress green"></div>
+        {activeSection === "dashboard" && (
+          <>
+            <div className="cards">
+              <div className="card">
+                <h4>Total Attackers</h4>
+                <h2>{summary.total_attackers || 0}</h2>
+                <div className="progress green"></div>
+              </div>
+
+              <div className="card">
+                <h4>High Severity</h4>
+                <h2>{summary.high_severity || 0}</h2>
+                <div className="progress red"></div>
+              </div>
+
+              <div className="card">
+                <h4>Medium Severity</h4>
+                <h2>{summary.medium_severity || 0}</h2>
+                <div className="progress blue"></div>
+              </div>
+
+              <div className="card">
+                <h4>Low Severity</h4>
+                <h2>{summary.low_severity || 0}</h2>
+                <div className="progress yellow"></div>
+              </div>
+            </div>
+
+            <div className="card" style={{ marginTop: "20px" }}>
+              <h3>Network Throughput</h3>
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={chartData}>
+                  <XAxis dataKey="time" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip />
+                  <Line
+                    type="monotone"
+                    dataKey="value"
+                    stroke="#38bdf8"
+                    strokeWidth={2}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            <AttackGraph alerts={alerts} />
+            <AttackerProfiles />
+          </>
+        )}
+
+        {activeSection === "alerts" && (
+          <AlertStream
+            alerts={displayedAlerts}
+            runTraceback={runTraceback}
+          />
+        )}
+
+        {activeSection === "topology" && (
+          <div className="card" style={{ marginTop: "20px" }}>
+            <h3>Network Topology</h3>
+            <p>Topology view coming next.</p>
+            <AttackGraph alerts={alerts} />
           </div>
+        )}
 
-          <div className="card">
-            <h4>High Severity</h4>
-            <h2>{summary.high_severity || 0}</h2>
-            <div className="progress red"></div>
-          </div>
-
-          <div className="card">
-            <h4>Medium Severity</h4>
-            <h2>{summary.medium_severity || 0}</h2>
-            <div className="progress blue"></div>
-          </div>
-
-          <div className="card">
-            <h4>Low Severity</h4>
-            <h2>{summary.low_severity || 0}</h2>
-            <div className="progress yellow"></div>
-          </div>
-        </div>
-
-        <div className="card" style={{ marginTop: "20px" }}>
-          <h3>Network Throughput</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={chartData}>
-              <XAxis dataKey="time" stroke="#94a3b8" />
-              <YAxis stroke="#94a3b8" />
-              <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#38bdf8"
-                strokeWidth={2}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        <AttackGraph alerts={alerts} />
-
-        <AttackerProfiles />
-
-        <button
-          type="button"
-          onClick={() => alert("Test button works")}
-          style={{
-            padding: "10px 14px",
-            marginTop: "20px",
-            marginBottom: "12px",
-            cursor: "pointer",
-            position: "relative",
-            zIndex: 10000,
-          }}
-        >
-          Test Click
-        </button>
-
-        <AlertStream
-          alerts={displayedAlerts}
-          runTraceback={runTraceback}
-        />
-
-        {(xaiResult || xaiError) && (
+        {activeSection === "traceback" && (
           <div className="card" style={{ marginTop: "20px" }}>
             <h3>Traceback / XAI Result</h3>
 
             {xaiError && <p>{xaiError}</p>}
 
-            {xaiResult && (
+            {xaiResult ? (
               <div>
                 <p>
                   <strong>Attack Type:</strong> {xaiResult.predicted_attack}
@@ -240,6 +276,8 @@ function App() {
                   </div>
                 )}
               </div>
+            ) : (
+              <p>Click an alert in the Alerts section to inspect traceback details.</p>
             )}
           </div>
         )}
