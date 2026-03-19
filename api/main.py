@@ -4,6 +4,13 @@ from pydantic import BaseModel
 import joblib
 import pandas as pd
 from pathlib import Path
+from typing import Optional
+from pydantic import BaseModel
+
+class AlertTraceInput(BaseModel):
+    source_ip: str
+    destination_ip: str
+    attack_type: Optional[str] = None
 
 app = FastAPI()
 
@@ -258,6 +265,76 @@ def get_attack_graph():
         "nodes": list(nodes.values()),
         "edges": edges
     }
-    # prediction = model.predict(input_data)
 
-    # return {"predicted_attack": prediction[0]}
+
+@app.post("/trace-alert")
+def trace_alert(alert: AlertTraceInput):
+    try:
+        flows = pd.read_csv("data/flow_features.csv")
+    except FileNotFoundError:
+        return {"error": "flow_features.csv not found"}
+
+    required_columns = [
+        "Source IP",
+        "Destination IP",
+        "Source Port",
+        "Destination Port",
+        "Protocol",
+        "Total Packets",
+        "Total Bytes",
+        "Average Packet Length",
+        "Max Packet Length",
+        "Min Packet Length",
+    ]
+
+    missing = [col for col in required_columns if col not in flows.columns]
+    if missing:
+        return {"error": f"Missing columns in flow_features.csv: {missing}"}
+
+    flows["Source IP"] = flows["Source IP"].astype(str).str.strip()
+    flows["Destination IP"] = flows["Destination IP"].astype(str).str.strip()
+
+    source_ip = str(alert.source_ip).strip()
+    destination_ip = str(alert.destination_ip).strip()
+
+    matched = flows[
+        (flows["Source IP"] == source_ip) |
+        (flows["Destination IP"] == source_ip) |
+        (flows["Source IP"] == destination_ip) |
+        (flows["Destination IP"] == destination_ip)
+    ]
+
+    print("TRACE REQUEST:", source_ip, destination_ip)
+    print("MATCHED ROWS:", len(matched))
+
+    if matched.empty:
+        return {"error": "No related flow found for this alert"}
+
+    row = matched.iloc[-1]
+
+    top_features = [
+        f"Total Bytes: {row['Total Bytes']}",
+        f"Total Packets: {row['Total Packets']}",
+        f"Average Packet Length: {row['Average Packet Length']}",
+        f"Max Packet Length: {row['Max Packet Length']}",
+        f"Min Packet Length: {row['Min Packet Length']}",
+    ]
+
+    return {
+        "source_ip": str(source_ip),
+        "destination_ip": str(destination_ip),
+        "attack_type": str(alert.attack_type) if alert.attack_type is not None else "",
+        "source_port": int(row["Source Port"]),
+        "destination_port": int(row["Destination Port"]),
+        "protocol": str(row["Protocol"]),
+        "predicted_attack": str(alert.attack_type) if alert.attack_type is not None else "",
+        "confidence": 100,
+        "top_features": [str(feature) for feature in top_features],
+        "flow_summary": {
+            "total_packets": int(row["Total Packets"]),
+            "total_bytes": int(row["Total Bytes"]),
+            "average_packet_length": float(row["Average Packet Length"]),
+            "max_packet_length": float(row["Max Packet Length"]),
+            "min_packet_length": float(row["Min Packet Length"]),
+        }
+    }

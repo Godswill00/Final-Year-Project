@@ -11,6 +11,7 @@ import {
 import AttackGraph from "./AttackGraph";
 import AttackerProfiles from "./AttackerProfiles";
 import AlertStream from "./AlertStream";
+import XAIChart from "./XAIChart";
 
 function App() {
   const [activeSection, setActiveSection] = useState("dashboard");
@@ -268,13 +269,10 @@ function App() {
                 {xaiResult.top_features && (
                   <div>
                     <strong>Key Features:</strong>
-                    <ul>
-                      {xaiResult.top_features.map((feature, index) => (
-                        <li key={index}>{feature}</li>
-                      ))}
-                    </ul>
-                  </div>
+                    <XAIChart features={xaiResult.top_features} />
+                    </div>
                 )}
+              
               </div>
             ) : (
               <p>Click an alert in the Alerts section to inspect traceback details.</p>

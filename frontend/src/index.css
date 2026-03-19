@@ -150,3 +150,7 @@ canvas {
   pointer-events: none;
   display: block;
 }
+
+canvas {
+  pointer-events: none !important;
+}
