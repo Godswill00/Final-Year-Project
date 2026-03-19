@@ -129,3 +129,16 @@ body {
     transform: translateY(0);
   }
 }
+
+.alert-box {
+  position: relative;
+  z-index: 9998;
+  pointer-events: auto;
+}
+
+.alert-item {
+  font: inherit;
+  position: relative;
+  z-index: 9999;
+  pointer-events: auto;
+}

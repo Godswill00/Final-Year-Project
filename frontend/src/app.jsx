@@ -9,6 +9,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import AttackGraph from "./AttackGraph";
+import AttackerProfiles from "./AttackerProfiles";
+import AlertStream from "./AlertStream";
 
 function App() {
   const [summary, setSummary] = useState({});
@@ -27,14 +29,23 @@ function App() {
     { time: "12:30", value: 70 },
   ];
 
-  const runTraceback = async (ip) => {
+  const runTraceback = async (sourceIp, destinationIp, attackType) => {
+    console.log("runTraceback called", sourceIp, destinationIp, attackType);
+
     try {
       setXaiError("");
       setXaiResult(null);
 
-      const res = await axios.post("http://127.0.0.1:8000/predict", {
-        source_ip: ip,
+      const res = await axios.post("http://127.0.0.1:8000/trace-alert", {
+        source_ip: sourceIp,
+        destination_ip: destinationIp,
+        attack_type: attackType,
       });
+
+      if (res.data.error) {
+        setXaiError(res.data.error);
+        return;
+      }
 
       setXaiResult(res.data);
     } catch (err) {
@@ -144,46 +155,27 @@ function App() {
 
         <AttackGraph alerts={alerts} />
 
-        <div className="alert-box">
-          <h3>Live Event Stream</h3>
+        <AttackerProfiles />
 
-          {displayedAlerts.map((a, i) => {
-            const severity =
-              a.confidence >= 95
-                ? "Critical"
-                : a.confidence >= 90
-                ? "High"
-                : a.confidence >= 80
-                ? "Medium"
-                : "Low";
+        <button
+          type="button"
+          onClick={() => alert("Test button works")}
+          style={{
+            padding: "10px 14px",
+            marginTop: "20px",
+            marginBottom: "12px",
+            cursor: "pointer",
+            position: "relative",
+            zIndex: 10000,
+          }}
+        >
+          Test Click
+        </button>
 
-            const alertClass =
-              severity === "Critical"
-                ? "alert-red"
-                : severity === "High"
-                ? "alert-yellow"
-                : severity === "Medium"
-                ? "alert-blue"
-                : "alert-green";
-
-            return (
-              <div
-                key={i}
-                className={`alert-item ${alertClass}`}
-                onClick={() => runTraceback(a.source_ip)}
-                style={{ cursor: "pointer" }}
-              >
-                <strong>
-                  {severity.toUpperCase()} — {a.attack_type}
-                </strong>
-                <br />
-                SRC: {a.source_ip} → DST: {a.destination_ip}
-                <br />
-                Confidence: {a.confidence}
-              </div>
-            );
-          })}
-        </div>
+        <AlertStream
+          alerts={displayedAlerts}
+          runTraceback={runTraceback}
+        />
 
         {(xaiResult || xaiError) && (
           <div className="card" style={{ marginTop: "20px" }}>
@@ -194,16 +186,52 @@ function App() {
             {xaiResult && (
               <div>
                 <p>
-                  <strong>Predicted Attack:</strong>{" "}
-                  {xaiResult.predicted_attack}
+                  <strong>Attack Type:</strong> {xaiResult.predicted_attack}
                 </p>
                 <p>
-                  <strong>Confidence:</strong> {xaiResult.confidence}
+                  <strong>Source:</strong> {xaiResult.source_ip}
                 </p>
+                <p>
+                  <strong>Destination:</strong> {xaiResult.destination_ip}
+                </p>
+                <p>
+                  <strong>Protocol:</strong> {xaiResult.protocol}
+                </p>
+                <p>
+                  <strong>Source Port:</strong> {xaiResult.source_port}
+                </p>
+                <p>
+                  <strong>Destination Port:</strong> {xaiResult.destination_port}
+                </p>
+
+                {xaiResult.flow_summary && (
+                  <div>
+                    <p>
+                      <strong>Total Packets:</strong>{" "}
+                      {xaiResult.flow_summary.total_packets}
+                    </p>
+                    <p>
+                      <strong>Total Bytes:</strong>{" "}
+                      {xaiResult.flow_summary.total_bytes}
+                    </p>
+                    <p>
+                      <strong>Average Packet Length:</strong>{" "}
+                      {xaiResult.flow_summary.average_packet_length}
+                    </p>
+                    <p>
+                      <strong>Max Packet Length:</strong>{" "}
+                      {xaiResult.flow_summary.max_packet_length}
+                    </p>
+                    <p>
+                      <strong>Min Packet Length:</strong>{" "}
+                      {xaiResult.flow_summary.min_packet_length}
+                    </p>
+                  </div>
+                )}
 
                 {xaiResult.top_features && (
                   <div>
-                    <strong>Top Features:</strong>
+                    <strong>Key Features:</strong>
                     <ul>
                       {xaiResult.top_features.map((feature, index) => (
                         <li key={index}>{feature}</li>
