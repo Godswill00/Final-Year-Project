@@ -1,53 +1,131 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function AttackGraph({ alerts = [] }) {
   const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 900, height: 360 });
+
+  const graphModel = useMemo(() => {
+    const withTimestamps = alerts
+      .map((alert) => ({
+        ...alert,
+        parsedTime: alert.timestamp ? new Date(alert.timestamp).getTime() : 0,
+      }))
+      .sort((a, b) => a.parsedTime - b.parsedTime)
+      .slice(-80);
+
+    const sourceCounts = new Map();
+    const destinationCounts = new Map();
+
+    withTimestamps.forEach((alert) => {
+      sourceCounts.set(
+        alert.source_ip,
+        (sourceCounts.get(alert.source_ip) || 0) + 1
+      );
+      destinationCounts.set(
+        alert.destination_ip,
+        (destinationCounts.get(alert.destination_ip) || 0) + 1
+      );
+    });
+
+    const sourceIps = Array.from(sourceCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([ip]) => ip);
+
+    const destinationIps = Array.from(destinationCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([ip]) => ip);
+
+    const edges = withTimestamps.filter(
+      (alert) =>
+        sourceIps.includes(alert.source_ip) &&
+        destinationIps.includes(alert.destination_ip)
+    );
+
+    return {
+      sourceIps,
+      destinationIps,
+      edges,
+      sourceCounts,
+      destinationCounts,
+    };
+  }, [alerts]);
+
+  useEffect(() => {
+    const updateSize = () => {
+      if (!containerRef.current) return;
+      const width = Math.max(680, Math.floor(containerRef.current.clientWidth));
+      setCanvasSize({ width, height: 360 });
+    };
+
+    updateSize();
+    window.addEventListener("resize", updateSize);
+
+    return () => window.removeEventListener("resize", updateSize);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
+
     const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
     let animationId;
     let offset = 0;
 
-    const width = canvas.width;
-    const height = canvas.height;
+    const pixelRatio = window.devicePixelRatio || 1;
+    const width = canvasSize.width;
+    const height = canvasSize.height;
+    canvas.width = width * pixelRatio;
+    canvas.height = height * pixelRatio;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
-    const sourceIps = [...new Set(alerts.map((a) => a.source_ip))];
-    const destIps = [...new Set(alerts.map((a) => a.destination_ip))];
+    const { sourceIps, destinationIps, edges, sourceCounts, destinationCounts } =
+      graphModel;
 
-    const sourceNodes = sourceIps.map((ip, i) => ({
-      id: ip,
-      label: ip,
-      x: 100,
-      y: 70 + i * 80,
-      type: "source",
-    }));
+    const buildVerticalNodes = (ips, xPosition, type) => {
+      if (ips.length === 0) return [];
 
-    const destNodes = destIps.map((ip, i) => ({
-      id: ip,
-      label: ip,
-      x: width - 140,
-      y: 70 + i * 80,
-      type: "dest",
-    }));
+      const usableHeight = height - 80;
+      const step = usableHeight / Math.max(ips.length - 1, 1);
 
+      return ips.map((ip, index) => ({
+        id: ip,
+        label: ip,
+        x: xPosition,
+        y: 40 + step * index,
+        type,
+      }));
+    };
+
+    const sourceNodes = buildVerticalNodes(sourceIps, 120, "source");
+    const destNodes = buildVerticalNodes(destinationIps, width - 120, "dest");
     const allNodes = [...sourceNodes, ...destNodes];
 
-    const getNodeById = (id) => allNodes.find((n) => n.id === id);
+    const getNodeById = (id) => allNodes.find((node) => node.id === id);
 
     const draw = () => {
       ctx.clearRect(0, 0, width, height);
 
-      // background dots
-      ctx.fillStyle = "#1e293b";
-      for (let x = 0; x < width; x += 25) {
-        for (let y = 0; y < height; y += 25) {
-          ctx.fillRect(x, y, 1.5, 1.5);
+      const bgGradient = ctx.createLinearGradient(0, 0, width, height);
+      bgGradient.addColorStop(0, "#0b1220");
+      bgGradient.addColorStop(1, "#101b30");
+      ctx.fillStyle = bgGradient;
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.fillStyle = "rgba(56, 189, 248, 0.15)";
+      for (let x = 20; x < width; x += 28) {
+        for (let y = 16; y < height; y += 28) {
+          ctx.fillRect(x, y, 1.1, 1.1);
         }
       }
 
-      // edges from real alerts
-      alerts.forEach((alert) => {
+      edges.forEach((alert, index) => {
         const src = getNodeById(alert.source_ip);
         const dst = getNodeById(alert.destination_ip);
         if (!src || !dst) return;
@@ -58,40 +136,77 @@ function AttackGraph({ alerts = [] }) {
         else if (alert.confidence >= 80) color = "#38bdf8";
         else color = "#22c55e";
 
+        const isRecent = index >= edges.length - 12;
+        const widthScale = 1 + Number(alert.confidence || 0) / 60;
+
         ctx.beginPath();
         ctx.setLineDash([6, 6]);
         ctx.lineDashOffset = -offset;
         ctx.moveTo(src.x, src.y);
         ctx.bezierCurveTo(
-          width / 2 - 80,
+          width / 2 - 95,
           src.y,
-          width / 2 + 80,
+          width / 2 + 95,
           dst.y,
           dst.x,
           dst.y
         );
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = widthScale;
+        ctx.globalAlpha = isRecent ? 0.95 : 0.45;
         ctx.stroke();
+
+        if (isRecent) {
+          ctx.beginPath();
+          ctx.arc(dst.x, dst.y, 4 + Math.sin(offset / 8) * 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.35;
+          ctx.fill();
+        }
       });
 
       ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
 
-      // nodes
       allNodes.forEach((node) => {
+        const nodeCount =
+          node.type === "source"
+            ? sourceCounts.get(node.id) || 0
+            : destinationCounts.get(node.id) || 0;
+
         ctx.beginPath();
-        ctx.arc(node.x, node.y, 6, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, 8, 0, Math.PI * 2);
         ctx.fillStyle = node.type === "source" ? "#22c55e" : "#38bdf8";
         ctx.fill();
 
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, 12, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(203, 213, 225, 0.3)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
         ctx.fillStyle = "#e5e7eb";
-        ctx.font = "12px Arial";
+        ctx.font = "12px Inter, sans-serif";
         ctx.fillText(
           node.label,
-          node.type === "source" ? node.x + 12 : node.x - 95,
-          node.y + 4
+          node.type === "source" ? node.x + 16 : node.x - 140,
+          node.y + 2
+        );
+
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "11px Inter, sans-serif";
+        ctx.fillText(
+          `${nodeCount} flow${nodeCount === 1 ? "" : "s"}`,
+          node.type === "source" ? node.x + 16 : node.x - 140,
+          node.y + 16
         );
       });
+
+      if (edges.length === 0) {
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "14px Inter, sans-serif";
+        ctx.fillText("Waiting for live packet alerts...", width / 2 - 92, height / 2);
+      }
 
       offset += 1;
       animationId = requestAnimationFrame(draw);
@@ -100,12 +215,12 @@ function AttackGraph({ alerts = [] }) {
     draw();
 
     return () => cancelAnimationFrame(animationId);
-  }, [alerts]);
+  }, [graphModel, canvasSize]);
 
   return (
-    <div className="card" style={{ marginTop: "20px" }}>
+    <div className="card attack-flow-card" style={{ marginTop: "20px" }} ref={containerRef}>
       <h3>Attack Flow Visualization</h3>
-      <canvas ref={canvasRef} width={900} height={320}></canvas>
+      <canvas ref={canvasRef}></canvas>
     </div>
   );
 }

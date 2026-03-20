@@ -1,6 +1,6 @@
 import React from "react";
 
-function AlertStream({ alerts, runTraceback }) {
+function AlertStream({ alerts, runTraceback, onSignalDashboard }) {
   return (
     <div className="card" style={{ marginTop: "20px" }}>
       <h3>Live Event Stream</h3>
@@ -8,6 +8,11 @@ function AlertStream({ alerts, runTraceback }) {
       {alerts.length === 0 && <p>No alerts yet.</p>}
 
       {alerts.map((a, i) => {
+        const xaiReasons = String(a.top_trigger_features || "")
+          .split("|")
+          .map((item) => item.trim())
+          .filter(Boolean);
+
         const severity =
           a.confidence >= 95
             ? "Critical"
@@ -30,8 +35,7 @@ function AlertStream({ alerts, runTraceback }) {
           <div
             key={i}
             onClick={() => {
-              console.log("CLICK WORKING", a);
-              alert(`Clicked: ${a.source_ip}`);
+              if (onSignalDashboard) onSignalDashboard(a);
               runTraceback(a.source_ip, a.destination_ip, a.attack_type);
             }}
             style={{
@@ -50,6 +54,28 @@ function AlertStream({ alerts, runTraceback }) {
             SRC: {a.source_ip} → DST: {a.destination_ip}
             <br />
             Confidence: {a.confidence}
+
+            <div className="alert-xai-block">
+              <small className="alert-xai-title">XAI Reasons:</small>
+              {xaiReasons.length > 0 ? (
+                <div className="alert-xai-reasons">
+                  {xaiReasons.map((reason) => (
+                    <span key={`${a.source_ip}-${a.destination_ip}-${reason}`} className="alert-xai-pill">
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <small className="alert-xai-fallback">
+                  Explainability details are still being generated for this alert.
+                </small>
+              )}
+            </div>
+
+            <br />
+            <small style={{ color: "#94a3b8" }}>
+              Click to signal dashboard and inspect traceback
+            </small>
           </div>
         );
       })}

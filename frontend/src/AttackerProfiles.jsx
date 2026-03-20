@@ -5,12 +5,19 @@ function AttackerProfiles() {
   const [profiles, setProfiles] = useState([]);
 
   useEffect(() => {
-    axios
-      .get("http://127.0.0.1:8000/attacker-profiles")
-      .then((res) => {
-        setProfiles(res.data.profiles || []);
-      })
-      .catch((err) => console.error(err));
+    const fetchProfiles = () => {
+      axios
+        .get("http://127.0.0.1:8000/attacker-profiles")
+        .then((res) => {
+          setProfiles(res.data.profiles || []);
+        })
+        .catch((err) => console.error(err));
+    };
+
+    fetchProfiles();
+    const interval = setInterval(fetchProfiles, 5000);
+
+    return () => clearInterval(interval);
   }, []);
 
   return (
@@ -32,14 +39,15 @@ function AttackerProfiles() {
         >
           <strong>Source IP:</strong> {p.source_ip} <br />
 
-          <strong>Attack Types:</strong>{" "}
-          {p.attack_types || "N/A"} <br />
+          <strong>Attack Types:</strong> {p.attack_types} <br />
 
-          <strong>Total Alerts:</strong>{" "}
-          {p.total_alerts || 0} <br />
+          <strong>Total Alerts:</strong> {p.total_alerts} <br />
 
-          <strong>Targets:</strong>{" "}
-          {p.targets || "N/A"}
+          <strong>Targets:</strong> {p.targets} <br />
+
+          <strong>Avg Confidence:</strong> {p.average_confidence}% <br />
+
+          <strong>Severity:</strong> {p.campaign_severity}
         </div>
       ))}
     </div>
