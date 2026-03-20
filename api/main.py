@@ -313,11 +313,12 @@ def trace_alert(alert: AlertTraceInput):
     row = matched.iloc[-1]
 
     top_features = [
-        f"Total Bytes: {row['Total Bytes']}",
-        f"Total Packets: {row['Total Packets']}",
-        f"Average Packet Length: {row['Average Packet Length']}",
-        f"Max Packet Length: {row['Max Packet Length']}",
-        f"Min Packet Length: {row['Min Packet Length']}",
+    {"name": "Total Bytes", "value": float(row["Total Bytes"])},
+    {"name": "Total Packets", "value": float(row["Total Packets"])},
+    {"name": "Avg Packet Length", "value": float(row["Average Packet Length"])},
+    {"name": "Max Packet Length", "value": float(row["Max Packet Length"])},
+    {"name": "Min Packet Length", "value": float(row["Min Packet Length"])},
+    
     ]
 
     return {
@@ -329,7 +330,7 @@ def trace_alert(alert: AlertTraceInput):
         "protocol": str(row["Protocol"]),
         "predicted_attack": str(alert.attack_type) if alert.attack_type is not None else "",
         "confidence": 100,
-        "top_features": [str(feature) for feature in top_features],
+        "top_features": top_features,
         "flow_summary": {
             "total_packets": int(row["Total Packets"]),
             "total_bytes": int(row["Total Bytes"]),
@@ -337,4 +338,29 @@ def trace_alert(alert: AlertTraceInput):
             "max_packet_length": float(row["Max Packet Length"]),
             "min_packet_length": float(row["Min Packet Length"]),
         }
+    }
+
+@app.get("/grouped-attacks")
+def grouped_attacks():
+    try:
+        alerts = pd.read_csv("data/intrusion_alerts.csv")
+    except FileNotFoundError:
+        return {"groups": []}
+
+    if alerts.empty:
+        return {"groups": []}
+
+    alerts["source_ip"] = alerts["source_ip"].astype(str).str.strip()
+
+    grouped = (
+        alerts.groupby("source_ip")
+        .agg(
+            attack_count=("attack_type", "count"),
+            attack_types=("attack_type", lambda x: list(set(x)))
+        )
+        .reset_index()
+    )
+
+    return {
+        "groups": grouped.to_dict(orient="records")
     }

@@ -4,21 +4,16 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  ResponsiveContainer
+  ResponsiveContainer,
 } from "recharts";
 
 function XAIChart({ features = [] }) {
-  const data = features.map((f) => ({
-    name: f,
-    value: Math.random() * 100
-  }));
-
   return (
-    <div style={{ height: 250 }}>
+    <div style={{ height: 260, marginTop: "10px" }}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data}>
-          <XAxis dataKey="name" hide />
-          <YAxis />
+        <BarChart data={features}>
+          <XAxis dataKey="name" stroke="#e5e7eb" />
+          <YAxis stroke="#e5e7eb" />
           <Tooltip />
           <Bar dataKey="value" fill="#38bdf8" />
         </BarChart>
