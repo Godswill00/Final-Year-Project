@@ -1,5 +1,6 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import joblib
 import pandas as pd
@@ -10,13 +11,13 @@ from datetime import datetime, timezone
 import asyncio
 import threading
 import socket
+import importlib
+import sqlite3
+import hashlib
+import os
+import secrets
 
 from scapy.all import sniff, IP, TCP, UDP
-
-try:
-    import psutil
-except ImportError:
-    psutil = None
 
 class AlertTraceInput(BaseModel):
     source_ip: str
@@ -27,6 +28,17 @@ class AlertTraceInput(BaseModel):
 class LiveCaptureResponse(BaseModel):
     status: str
     message: str
+
+
+class SignupInput(BaseModel):
+    full_name: str
+    email: str
+    password: str
+
+
+class LoginInput(BaseModel):
+    email: str
+    password: str
 
 app = FastAPI()
 
@@ -42,6 +54,7 @@ app.add_middleware(
 model = joblib.load("model/intrusion_model.pkl")
 ALERTS_FILE = Path("data/intrusion_alerts.csv")
 PROFILES_FILE = Path("data/attacker_profiles.csv")
+AUTH_DB_FILE = Path("data/auth_users.db")
 ALERT_COLUMNS = [
     "timestamp",
     "attack_type",
@@ -79,13 +92,194 @@ live_status = {
 }
 
 
+def get_auth_connection() -> sqlite3.Connection:
+    AUTH_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(AUTH_DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_auth_db() -> None:
+    with get_auth_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                revoked_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.commit()
+
+
+def normalize_email(email: str) -> str:
+    return str(email).strip().lower()
+
+
+def hash_password(password: str, salt: bytes) -> str:
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100_000)
+    return digest.hex()
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_auth_session(user_id: int) -> str:
+    token = secrets.token_urlsafe(48)
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    with get_auth_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO auth_sessions (user_id, token_hash, created_at, expires_at, revoked, revoked_at)
+            VALUES (?, ?, ?, NULL, 0, NULL)
+            """,
+            (user_id, hash_token(token), created_at),
+        )
+        conn.commit()
+
+    return token
+
+
+def get_token_from_auth_header(auth_header: str) -> Optional[str]:
+    if not auth_header:
+        return None
+
+    parts = auth_header.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+
+    token = parts[1].strip()
+    return token or None
+
+
+def get_user_by_token(token: str) -> Optional[sqlite3.Row]:
+    token_digest = hash_token(token)
+    with get_auth_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT u.id, u.full_name, u.email, u.created_at
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.token_hash = ? AND s.revoked = 0
+            """,
+            (token_digest,),
+        ).fetchone()
+        return row
+
+
+def revoke_token(token: str) -> bool:
+    token_digest = hash_token(token)
+    revoked_at = datetime.now(timezone.utc).isoformat()
+    with get_auth_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked = 1, revoked_at = ?
+            WHERE token_hash = ? AND revoked = 0
+            """,
+            (revoked_at, token_digest),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def build_auth_response(user_row: sqlite3.Row) -> dict:
+    token = create_auth_session(int(user_row["id"]))
+    return {
+        "message": "Authentication successful",
+        "token": token,
+        "user": {
+            "id": int(user_row["id"]),
+            "full_name": str(user_row["full_name"]),
+            "email": str(user_row["email"]),
+            "created_at": str(user_row["created_at"]),
+        },
+    }
+
+
+def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
+    with get_auth_connection() as conn:
+        row = conn.execute(
+            "SELECT id, full_name, email, password_hash, password_salt, created_at FROM users WHERE email = ?",
+            (normalize_email(email),),
+        ).fetchone()
+        return row
+
+
+PUBLIC_PATHS = {
+    "/",
+    "/auth/signup",
+    "/auth/login",
+}
+
+PUBLIC_PREFIXES = (
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/ws/",
+)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if path in PUBLIC_PATHS or any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    token = get_token_from_auth_header(auth_header)
+    if not token:
+        return JSONResponse(status_code=401, content={"detail": "Missing or invalid auth token."})
+
+    user = get_user_by_token(token)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired auth token."})
+
+    request.state.auth_user = {
+        "id": int(user["id"]),
+        "full_name": str(user["full_name"]),
+        "email": str(user["email"]),
+        "created_at": str(user["created_at"]),
+    }
+    request.state.auth_token = token
+
+    return await call_next(request)
+
+
 def get_wired_connection_status() -> dict:
-    if psutil is None:
+    psutil_module = importlib.util.find_spec("psutil")
+    if psutil_module is None:
         return {
             "connected": False,
             "interfaces": [],
             "reason": "psutil not installed",
         }
+
+    psutil = importlib.import_module("psutil")
 
     stats = psutil.net_if_stats()
     addrs = psutil.net_if_addrs()
@@ -567,6 +761,7 @@ async def startup_event():
     global main_loop, broadcast_task
     main_loop = asyncio.get_running_loop()
     broadcast_task = asyncio.create_task(broadcast_alerts())
+    init_auth_db()
 
     try:
         live_detector.start()
@@ -663,6 +858,88 @@ def predict_attack(traffic: TrafficInput):
         "confidence": round(confidence, 2),
         "top_features": top_features
     }
+
+
+@app.post("/auth/signup")
+def signup(payload: SignupInput):
+    full_name = payload.full_name.strip()
+    email = normalize_email(payload.email)
+    password = payload.password
+
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Full name must be at least 2 characters.")
+
+    if "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    has_upper = any(ch.isupper() for ch in password)
+    has_lower = any(ch.islower() for ch in password)
+    has_digit = any(ch.isdigit() for ch in password)
+    if not (has_upper and has_lower and has_digit):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must include uppercase, lowercase, and a number.",
+        )
+
+    if get_user_by_email(email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    salt = os.urandom(16)
+    password_hash = hash_password(password, salt)
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with get_auth_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO users (full_name, email, password_hash, password_salt, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (full_name, email, password_hash, salt.hex(), created_at),
+            )
+            conn.commit()
+            user_id = int(cursor.lastrowid)
+
+            user_row = conn.execute(
+                "SELECT id, full_name, email, created_at FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    return build_auth_response(user_row)
+
+
+@app.post("/auth/login")
+def login(payload: LoginInput):
+    email = normalize_email(payload.email)
+    password = payload.password
+
+    user_row = get_user_by_email(email)
+    if not user_row:
+        raise HTTPException(status_code=401, detail="Incorrect login credentials.")
+
+    salt = bytes.fromhex(str(user_row["password_salt"]))
+    expected_hash = str(user_row["password_hash"])
+    actual_hash = hash_password(password, salt)
+
+    if not secrets.compare_digest(expected_hash, actual_hash):
+        raise HTTPException(status_code=401, detail="Incorrect login credentials.")
+
+    return build_auth_response(user_row)
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    token = getattr(request.state, "auth_token", None)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing or invalid auth token.")
+
+    revoke_token(token)
+    return {"message": "Logged out successfully."}
 
 @app.get("/alerts")
 def get_alerts():

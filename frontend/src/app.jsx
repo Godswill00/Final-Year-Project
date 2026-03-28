@@ -17,8 +17,129 @@ import AlertStream from "./AlertStream";
 import XAIChart from "./XAIChart";
 import GroupedAttack from "./GroupedAttack";
 import AttackTimeline from "./AttackTimeline";
+import AuthPage from "./AuthPage";
+import { clearAuthSession, getAuthSession, logoutUser } from "./services/api";
+
+const UI_SETTINGS_KEY = "traceguard_ui_settings";
+const DEFAULT_UI_SETTINGS = {
+  nickname: "",
+  theme: "dark",
+  language: "en",
+  avatarDataUrl: "",
+};
+
+const TRANSLATIONS = {
+  en: {
+    dashboard: "Dashboard",
+    alerts: "Alerts",
+    topology: "Topology",
+    wiredTransfer: "Wired Transfer",
+    traceback: "Traceback",
+    settings: "Settings",
+    signedIn: "Signed in",
+    logout: "Logout",
+    searchPlaceholder: "Enter IP, Domain...",
+    profilePhoto: "Profile Photo",
+    uploadPhoto: "Upload Photo",
+    settingsTitle: "Dashboard Settings",
+    settingsSubtitle: "Customize your name, appearance, and language.",
+    nickname: "Name / Nickname",
+    nicknamePlaceholder: "Enter preferred display name",
+    themeMode: "Theme Mode",
+    darkMode: "Dark",
+    lightMode: "Light",
+    language: "Language",
+  },
+  fr: {
+    dashboard: "Tableau de bord",
+    alerts: "Alertes",
+    topology: "Topologie",
+    wiredTransfer: "Transfert filaire",
+    traceback: "Trace",
+    settings: "Parametres",
+    signedIn: "Connecte",
+    logout: "Deconnexion",
+    searchPlaceholder: "Saisir IP, Domaine...",
+    profilePhoto: "Photo de profil",
+    uploadPhoto: "Televerser une photo",
+    settingsTitle: "Parametres du tableau",
+    settingsSubtitle: "Personnalisez votre nom, apparence et langue.",
+    nickname: "Nom / Surnom",
+    nicknamePlaceholder: "Entrez un nom d'affichage",
+    themeMode: "Mode theme",
+    darkMode: "Sombre",
+    lightMode: "Clair",
+    language: "Langue",
+  },
+  es: {
+    dashboard: "Panel",
+    alerts: "Alertas",
+    topology: "Topologia",
+    wiredTransfer: "Transferencia por Cable",
+    traceback: "Rastreo",
+    settings: "Configuracion",
+    signedIn: "Conectado",
+    logout: "Cerrar sesion",
+    searchPlaceholder: "Ingresar IP, Dominio...",
+    profilePhoto: "Foto de Perfil",
+    uploadPhoto: "Subir foto",
+    settingsTitle: "Configuracion del panel",
+    settingsSubtitle: "Personaliza tu nombre, apariencia e idioma.",
+    nickname: "Nombre / Apodo",
+    nicknamePlaceholder: "Ingrese nombre para mostrar",
+    themeMode: "Modo de tema",
+    darkMode: "Oscuro",
+    lightMode: "Claro",
+    language: "Idioma",
+  },
+  de: {
+    dashboard: "Dashboard",
+    alerts: "Warnungen",
+    topology: "Topologie",
+    wiredTransfer: "Kabeluebertragung",
+    traceback: "Rueckverfolgung",
+    settings: "Einstellungen",
+    signedIn: "Angemeldet",
+    logout: "Abmelden",
+    searchPlaceholder: "IP, Domain eingeben...",
+    profilePhoto: "Profilbild",
+    uploadPhoto: "Bild hochladen",
+    settingsTitle: "Dashboard-Einstellungen",
+    settingsSubtitle: "Name, Darstellung und Sprache anpassen.",
+    nickname: "Name / Spitzname",
+    nicknamePlaceholder: "Anzeigenamen eingeben",
+    themeMode: "Designmodus",
+    darkMode: "Dunkel",
+    lightMode: "Hell",
+    language: "Sprache",
+  },
+};
+
+const LANGUAGE_OPTIONS = [
+  { value: "en", label: "English" },
+  { value: "fr", label: "Francais" },
+  { value: "es", label: "Espanol" },
+  { value: "de", label: "Deutsch" },
+];
+
+const readUiSettings = () => {
+  try {
+    const raw = localStorage.getItem(UI_SETTINGS_KEY);
+    if (!raw) return DEFAULT_UI_SETTINGS;
+    return {
+      ...DEFAULT_UI_SETTINGS,
+      ...JSON.parse(raw),
+    };
+  } catch (error) {
+    return DEFAULT_UI_SETTINGS;
+  }
+};
 
 function App() {
+  const [authSession, setAuthSession] = useState(() => getAuthSession());
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return Boolean(getAuthSession());
+  });
   const [activeSection, setActiveSection] = useState("dashboard");
   const [summary, setSummary] = useState({});
   const [alerts, setAlerts] = useState([]);
@@ -38,11 +159,16 @@ function App() {
     interfaces: [],
     reason: "checking",
   });
+  const [uiSettings, setUiSettings] = useState(readUiSettings);
   const wsRef = useRef(null);
   const activeSectionRef = useRef("dashboard");
   const reconnectTimerRef = useRef(null);
   const heartbeatTimerRef = useRef(null);
   const connectionSeqRef = useRef(0);
+
+  const activeLanguage = TRANSLATIONS[uiSettings.language] ? uiSettings.language : "en";
+  const t = (key) => TRANSLATIONS[activeLanguage]?.[key] || TRANSLATIONS.en[key] || key;
+  const displayName = uiSettings.nickname.trim() || authSession?.user?.full_name || authSession?.user?.email || "Analyst";
 
   const formatLocalTimeLabel = (timeValue) => {
     const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -211,6 +337,54 @@ function App() {
     }
   };
 
+  const handleAuthenticated = (authData) => {
+    setAuthSession(authData || getAuthSession());
+    setIsAuthenticated(true);
+    setActiveSection("dashboard");
+    setUnseenDashboardSignals(0);
+  };
+
+  const handleLogout = () => {
+    logoutUser().catch((error) => {
+      console.error("Logout endpoint failed", error);
+    });
+
+    // Apply local logout immediately for a smooth transition to auth page.
+    clearAuthSession();
+    setAuthSession(null);
+    setIsAuthenticated(false);
+    setActiveSection("dashboard");
+    setUnseenDashboardSignals(0);
+  };
+
+  const onAvatarChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imageData = typeof reader.result === "string" ? reader.result : "";
+      setUiSettings((prev) => ({ ...prev, avatarDataUrl: imageData }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUiSettingChange = (key, value) => {
+    setUiSettings((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  useEffect(() => {
+    localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings));
+  }, [uiSettings]);
+
+  useEffect(() => {
+    const nextTheme = uiSettings.theme === "light" ? "theme-light" : "theme-dark";
+    document.body.classList.remove("theme-light", "theme-dark");
+    document.body.classList.add(nextTheme);
+  }, [uiSettings.theme]);
+
   useEffect(() => {
     activeSectionRef.current = activeSection;
   }, [activeSection]);
@@ -242,6 +416,10 @@ function App() {
   };
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isMounted = true;
 
     const fetchInitialData = () => {
@@ -396,12 +574,46 @@ function App() {
         wsRef.current.close();
       }
     };
-  }, []);
+  }, [isAuthenticated]);
+
+  if (!isAuthenticated) {
+    return <AuthPage onAuthenticated={handleAuthenticated} />;
+  }
 
   return (
     <div className="app-container">
       <div className="sidebar">
-        <h2>🛡️ TraceGuard</h2>
+        <div className="sidebar-profile-block">
+          <p className="sidebar-profile-label">{t("profilePhoto")}</p>
+          <label className="sidebar-avatar" htmlFor="sidebar-avatar-input">
+            {uiSettings.avatarDataUrl ? (
+              <img src={uiSettings.avatarDataUrl} alt="User avatar" className="sidebar-avatar-image" />
+            ) : (
+              <span className="sidebar-avatar-placeholder">+</span>
+            )}
+          </label>
+          <input
+            id="sidebar-avatar-input"
+            className="sidebar-avatar-input"
+            type="file"
+            accept="image/*"
+            onChange={onAvatarChange}
+          />
+          <label htmlFor="sidebar-avatar-input" className="sidebar-avatar-upload">
+            {t("uploadPhoto")}
+          </label>
+        </div>
+
+        <h2>
+          <button
+            type="button"
+            className="app-title-btn"
+            onClick={() => window.location.reload()}
+            aria-label="Refresh TraceGuard dashboard"
+          >
+            🛡️ TraceGuard
+          </button>
+        </h2>
         <p className="slogan">Advanced Intelligence • Proven Evidence</p>
 
         <button
@@ -412,7 +624,7 @@ function App() {
           type="button"
         >
           <span className="sidebar-item-with-badge">
-            Dashboard
+            {t("dashboard")}
             {unseenDashboardSignals > 0 && (
               <span className="sidebar-badge">{unseenDashboardSignals}</span>
             )}
@@ -426,7 +638,7 @@ function App() {
           onClick={() => changeSection("alerts")}
           type="button"
         >
-          Alerts
+          {t("alerts")}
         </button>
 
         <button
@@ -436,7 +648,7 @@ function App() {
           onClick={() => changeSection("topology")}
           type="button"
         >
-          Topology
+          {t("topology")}
         </button>
 
         <button
@@ -446,7 +658,7 @@ function App() {
           onClick={() => changeSection("wired-transfer")}
           type="button"
         >
-          Wired Transfer
+          {t("wiredTransfer")}
         </button>
 
         <button
@@ -456,14 +668,35 @@ function App() {
           onClick={() => changeSection("traceback")}
           type="button"
         >
-          Traceback
+          {t("traceback")}
+        </button>
+
+        <button
+          className={`sidebar-item ${
+            activeSection === "settings" ? "active" : ""
+          }`}
+          onClick={() => changeSection("settings")}
+          type="button"
+        >
+          {t("settings")}
         </button>
       </div>
 
       <div className="main">
         <div className="topbar">
-          <input className="search" placeholder="Enter IP, Domain..." />
-          <div className="status">● {liveStatus}</div>
+          <input className="search" placeholder={t("searchPlaceholder")} />
+          <div className="topbar-right">
+            <div className="status">● {liveStatus}</div>
+            <div className="user-menu">
+              <div className="user-meta">
+                <span className="user-meta-label">{t("signedIn")}</span>
+                <strong>{displayName}</strong>
+              </div>
+              <button type="button" className="logout-btn" onClick={handleLogout}>
+                {t("logout")}
+              </button>
+            </div>
+          </div>
         </div>
 
         {activeSection === "dashboard" && (
@@ -740,6 +973,56 @@ function App() {
             ) : (
               <p>Click an alert in the Alerts section to inspect traceback details.</p>
             )}
+          </div>
+        )}
+
+        {activeSection === "settings" && (
+          <div className="card settings-card" style={{ marginTop: "20px" }}>
+            <h3>{t("settingsTitle")}</h3>
+            <p className="settings-subtitle">{t("settingsSubtitle")}</p>
+
+            <div className="settings-grid">
+              <div className="settings-item">
+                <label htmlFor="nickname-input">{t("nickname")}</label>
+                <input
+                  id="nickname-input"
+                  className="settings-input"
+                  type="text"
+                  value={uiSettings.nickname}
+                  onChange={(event) => handleUiSettingChange("nickname", event.target.value)}
+                  placeholder={t("nicknamePlaceholder")}
+                />
+              </div>
+
+              <div className="settings-item">
+                <label htmlFor="theme-select">{t("themeMode")}</label>
+                <select
+                  id="theme-select"
+                  className="settings-select"
+                  value={uiSettings.theme}
+                  onChange={(event) => handleUiSettingChange("theme", event.target.value)}
+                >
+                  <option value="dark">{t("darkMode")}</option>
+                  <option value="light">{t("lightMode")}</option>
+                </select>
+              </div>
+
+              <div className="settings-item">
+                <label htmlFor="language-select">{t("language")}</label>
+                <select
+                  id="language-select"
+                  className="settings-select"
+                  value={uiSettings.language}
+                  onChange={(event) => handleUiSettingChange("language", event.target.value)}
+                >
+                  {LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
         )}
       </div>

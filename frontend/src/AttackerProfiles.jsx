@@ -27,16 +27,7 @@ function AttackerProfiles() {
       {profiles.length === 0 && <p>No attacker profiles yet.</p>}
 
       {profiles.map((p, i) => (
-        <div
-          key={i}
-          style={{
-            padding: "12px",
-            marginBottom: "10px",
-            borderLeft: "4px solid #38bdf8",
-            background: "#0f172a",
-            borderRadius: "6px",
-          }}
-        >
+        <div key={i} className="attacker-profile-item">
           <strong>Source IP:</strong> {p.source_ip} <br />
 
           <strong>Attack Types:</strong> {p.attack_types} <br />
