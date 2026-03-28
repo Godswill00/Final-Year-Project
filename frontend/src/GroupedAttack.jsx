@@ -8,15 +8,22 @@ function GroupedAttacks() {
   const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
-    axios
-      .get("http://127.0.0.1:8000/grouped-attacks")
-      .then((res) => {
-        const sortedGroups = (res.data.groups || []).sort(
-          (a, b) => (b.attack_count || 0) - (a.attack_count || 0)
-        );
-        setGroups(sortedGroups);
-      })
-      .catch((err) => console.error(err));
+    const fetchGroupedAttacks = () => {
+      axios
+        .get("http://127.0.0.1:8000/live/grouped-attacks")
+        .then((res) => {
+          const sortedGroups = (res.data.groups || []).sort(
+            (a, b) => (b.attack_count || 0) - (a.attack_count || 0)
+          );
+          setGroups(sortedGroups);
+        })
+        .catch((err) => console.error(err));
+    };
+
+    fetchGroupedAttacks();
+    const interval = setInterval(fetchGroupedAttacks, 5000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const totalPages = Math.max(1, Math.ceil(groups.length / ITEMS_PER_PAGE));

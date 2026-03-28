@@ -79,6 +79,8 @@ BENIGN_LABELS = {
 connected_clients: set[WebSocket] = set()
 live_alerts = deque(maxlen=300)
 alerts_lock = threading.Lock()
+live_flows = deque(maxlen=600)
+flows_lock = threading.Lock()
 alert_queue: asyncio.Queue = asyncio.Queue()
 main_loop: Optional[asyncio.AbstractEventLoop] = None
 broadcast_task: Optional[asyncio.Task] = None
@@ -482,6 +484,55 @@ def build_attacker_profiles(data: pd.DataFrame) -> pd.DataFrame:
     return profile_df
 
 
+def summarize_attacker_profiles(profile_df: pd.DataFrame) -> dict:
+    if profile_df.empty:
+        return {
+            "total_attackers": 0,
+            "high_severity": 0,
+            "medium_severity": 0,
+            "low_severity": 0,
+        }
+
+    return {
+        "total_attackers": len(profile_df),
+        "high_severity": int((profile_df["campaign_severity"] == "HIGH").sum()),
+        "medium_severity": int((profile_df["campaign_severity"] == "MEDIUM").sum()),
+        "low_severity": int((profile_df["campaign_severity"] == "LOW").sum()),
+    }
+
+
+def load_live_alerts_dataframe(include_benign: bool = False) -> pd.DataFrame:
+    with alerts_lock:
+        alerts_snapshot = list(live_alerts)
+
+    if not alerts_snapshot:
+        return pd.DataFrame(columns=ALERT_COLUMNS)
+
+    data = pd.DataFrame(alerts_snapshot)
+    for col in ALERT_COLUMNS:
+        if col not in data.columns:
+            data[col] = ""
+
+    data = data[ALERT_COLUMNS]
+    data["source_ip"] = data["source_ip"].astype(str).str.strip()
+    data["destination_ip"] = data["destination_ip"].astype(str).str.strip()
+    data["attack_type"] = data["attack_type"].astype(str).str.strip()
+
+    valid_ips = data["source_ip"].str.contains(r"\.", na=False) & data[
+        "destination_ip"
+    ].str.contains(r"\.", na=False)
+    data = data[valid_ips]
+
+    data["confidence"] = pd.to_numeric(data["confidence"], errors="coerce").fillna(0)
+    data["packets_in_flow"] = pd.to_numeric(data["packets_in_flow"], errors="coerce").fillna(0)
+    data["bytes_in_flow"] = pd.to_numeric(data["bytes_in_flow"], errors="coerce").fillna(0)
+
+    if not include_benign:
+        data = data[~data["attack_type"].str.lower().isin(BENIGN_LABELS)]
+
+    return data[ALERT_COLUMNS]
+
+
 class LivePacketDetector:
     def __init__(self):
         self.stop_event = threading.Event()
@@ -613,6 +664,21 @@ class LivePacketDetector:
         flow["packet_lengths"].append(pkt_len)
         flow["total_fwd_packets"] += 1
         flow["total_fwd_bytes"] += pkt_len
+
+        flow_event = {
+            "timestamp": now.isoformat(),
+            "source_ip": src_ip,
+            "destination_ip": dst_ip,
+            "source_port": src_port,
+            "destination_port": dst_port,
+            "protocol": proto_name,
+            "packet_length": pkt_len,
+            "packets_in_flow": flow["total_fwd_packets"],
+            "bytes_in_flow": flow["total_fwd_bytes"],
+        }
+
+        with flows_lock:
+            live_flows.appendleft(flow_event)
 
         if flow["total_fwd_packets"] < 5:
             return
@@ -956,6 +1022,12 @@ def get_live_alerts():
         return {"alerts": list(live_alerts)}
 
 
+@app.get("/live/flows")
+def get_live_flows():
+    with flows_lock:
+        return {"flows": list(live_flows)}
+
+
 @app.get("/live/status")
 def get_live_status():
     return live_status
@@ -1017,25 +1089,29 @@ def get_attacker_profiles():
     return {"profiles": data.to_dict(orient="records")}
 
 
+@app.get("/live/attacker-profiles")
+def get_live_attacker_profiles():
+    alerts = load_live_alerts_dataframe(include_benign=False)
+    data = build_attacker_profiles(alerts)
+
+    if data.empty:
+        return {"message": "No live attacker profiles derived from packet flow yet.", "profiles": []}
+
+    return {"profiles": data.to_dict(orient="records")}
+
+
 @app.get("/attack-summary")
 def get_attack_summary():
     alerts = load_alerts_dataframe(include_benign=False)
     data = build_attacker_profiles(alerts)
+    return summarize_attacker_profiles(data)
 
-    if data.empty:
-        return {
-            "total_attackers": 0,
-            "high_severity": 0,
-            "medium_severity": 0,
-            "low_severity": 0
-        }
 
-    return {
-        "total_attackers": len(data),
-        "high_severity": int((data["campaign_severity"] == "HIGH").sum()),
-        "medium_severity": int((data["campaign_severity"] == "MEDIUM").sum()),
-        "low_severity": int((data["campaign_severity"] == "LOW").sum())
-    }
+@app.get("/live/attack-summary")
+def get_live_attack_summary():
+    live_df = load_live_alerts_dataframe(include_benign=False)
+    data = build_attacker_profiles(live_df)
+    return summarize_attacker_profiles(data)
 
 @app.get("/attack-graph")
 def get_attack_graph():
@@ -1082,74 +1158,79 @@ def get_attack_graph():
 
 @app.post("/trace-alert")
 def trace_alert(alert: AlertTraceInput):
-    try:
-        flows = pd.read_csv("data/flow_features.csv")
-    except FileNotFoundError:
-        return {"error": "flow_features.csv not found"}
-
-    required_columns = [
-        "Source IP",
-        "Destination IP",
-        "Source Port",
-        "Destination Port",
-        "Protocol",
-        "Total Packets",
-        "Total Bytes",
-        "Average Packet Length",
-        "Max Packet Length",
-        "Min Packet Length",
-    ]
-
-    missing = [col for col in required_columns if col not in flows.columns]
-    if missing:
-        return {"error": f"Missing columns in flow_features.csv: {missing}"}
-
-    flows["Source IP"] = flows["Source IP"].astype(str).str.strip()
-    flows["Destination IP"] = flows["Destination IP"].astype(str).str.strip()
-
     source_ip = str(alert.source_ip).strip()
     destination_ip = str(alert.destination_ip).strip()
+    attack_type = str(alert.attack_type).strip() if alert.attack_type is not None else ""
 
-    matched = flows[
-        (flows["Source IP"] == source_ip) |
-        (flows["Destination IP"] == source_ip) |
-        (flows["Source IP"] == destination_ip) |
-        (flows["Destination IP"] == destination_ip)
+    with alerts_lock:
+        snapshot = list(live_alerts)
+
+    if not snapshot:
+        return {"error": "No live packet flow available yet."}
+
+    def matches_live_flow(item: dict) -> bool:
+        item_src = str(item.get("source_ip", "")).strip()
+        item_dst = str(item.get("destination_ip", "")).strip()
+        item_attack = str(item.get("attack_type", "")).strip()
+
+        endpoint_match = (
+            (item_src == source_ip and item_dst == destination_ip)
+            or (item_src == destination_ip and item_dst == source_ip)
+        )
+        if not endpoint_match:
+            return False
+
+        if attack_type and item_attack and item_attack != attack_type:
+            return False
+
+        return True
+
+    matching_alerts = [item for item in snapshot if matches_live_flow(item)]
+    if not matching_alerts:
+        return {"error": "No related live packet flow found for this alert."}
+
+    matched_alert = matching_alerts[0]
+
+    packets = int(float(matched_alert.get("packets_in_flow", 0) or 0))
+    total_bytes = int(float(matched_alert.get("bytes_in_flow", 0) or 0))
+    average_packet_length = float(total_bytes / packets) if packets > 0 else 0.0
+
+    trigger_features = [
+        feature.strip()
+        for feature in str(matched_alert.get("top_trigger_features", "")).split("|")
+        if feature.strip()
     ]
-
-    print("TRACE REQUEST:", source_ip, destination_ip)
-    print("MATCHED ROWS:", len(matched))
-
-    if matched.empty:
-        return {"error": "No related flow found for this alert"}
-
-    row = matched.iloc[-1]
 
     top_features = [
-    {"name": "Total Bytes", "value": float(row["Total Bytes"])},
-    {"name": "Total Packets", "value": float(row["Total Packets"])},
-    {"name": "Avg Packet Length", "value": float(row["Average Packet Length"])},
-    {"name": "Max Packet Length", "value": float(row["Max Packet Length"])},
-    {"name": "Min Packet Length", "value": float(row["Min Packet Length"])},
-    
+        {"name": name, "value": 1.0}
+        for name in trigger_features[:5]
     ]
 
+    if not top_features:
+        top_features = [
+            {"name": "Total Bytes", "value": float(total_bytes)},
+            {"name": "Total Packets", "value": float(packets)},
+            {"name": "Average Packet Length", "value": float(average_packet_length)},
+        ]
+
+    confidence = float(matched_alert.get("confidence", 0) or 0)
+
     return {
-        "source_ip": str(source_ip),
-        "destination_ip": str(destination_ip),
-        "attack_type": str(alert.attack_type) if alert.attack_type is not None else "",
-        "source_port": int(row["Source Port"]),
-        "destination_port": int(row["Destination Port"]),
-        "protocol": str(row["Protocol"]),
-        "predicted_attack": str(alert.attack_type) if alert.attack_type is not None else "",
-        "confidence": 100,
+        "source_ip": str(matched_alert.get("source_ip", source_ip)),
+        "destination_ip": str(matched_alert.get("destination_ip", destination_ip)),
+        "attack_type": str(matched_alert.get("attack_type", attack_type)),
+        "source_port": int(float(matched_alert.get("source_port", 0) or 0)),
+        "destination_port": int(float(matched_alert.get("destination_port", 0) or 0)),
+        "protocol": str(matched_alert.get("protocol", "")),
+        "predicted_attack": str(matched_alert.get("attack_type", attack_type)),
+        "confidence": round(confidence, 2),
         "top_features": top_features,
         "flow_summary": {
-            "total_packets": int(row["Total Packets"]),
-            "total_bytes": int(row["Total Bytes"]),
-            "average_packet_length": float(row["Average Packet Length"]),
-            "max_packet_length": float(row["Max Packet Length"]),
-            "min_packet_length": float(row["Min Packet Length"]),
+            "total_packets": packets,
+            "total_bytes": total_bytes,
+            "average_packet_length": round(average_packet_length, 2),
+            "max_packet_length": round(average_packet_length, 2),
+            "min_packet_length": round(average_packet_length, 2),
         }
     }
 
@@ -1170,6 +1251,26 @@ def grouped_attacks():
         .agg(
             attack_count=("attack_type", "count"),
             attack_types=("attack_type", lambda x: list(set(x)))
+        )
+        .reset_index()
+    )
+
+    return {
+        "groups": grouped.to_dict(orient="records")
+    }
+
+
+@app.get("/live/grouped-attacks")
+def live_grouped_attacks():
+    alerts = load_live_alerts_dataframe(include_benign=False)
+    if alerts.empty:
+        return {"groups": []}
+
+    grouped = (
+        alerts.groupby("source_ip")
+        .agg(
+            attack_count=("attack_type", "count"),
+            attack_types=("attack_type", lambda x: list(sorted(set(x))))
         )
         .reset_index()
     )

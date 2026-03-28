@@ -143,6 +143,7 @@ function App() {
   const [activeSection, setActiveSection] = useState("dashboard");
   const [summary, setSummary] = useState({});
   const [alerts, setAlerts] = useState([]);
+  const [liveFlows, setLiveFlows] = useState([]);
   const [displayedAlerts, setDisplayedAlerts] = useState([]);
   const [dashboardSignal, setDashboardSignal] = useState(null);
   const [unseenDashboardSignals, setUnseenDashboardSignals] = useState(0);
@@ -182,9 +183,15 @@ function App() {
 
   const latestForensicPacket = useMemo(() => {
     if (dashboardSignal) return dashboardSignal;
+    if (liveFlows.length > 0) return liveFlows[0];
     if (alerts.length === 0) return null;
     return alerts[alerts.length - 1];
-  }, [dashboardSignal, alerts]);
+  }, [dashboardSignal, liveFlows, alerts]);
+
+  const latestLiveFlowMovement = useMemo(() => {
+    if (liveFlows.length === 0) return null;
+    return liveFlows[0];
+  }, [liveFlows]);
 
   const packetForensics = useMemo(() => {
     if (!latestForensicPacket) return null;
@@ -424,12 +431,12 @@ function App() {
 
     const fetchInitialData = () => {
       axios
-        .get("http://127.0.0.1:8000/attack-summary")
+        .get("http://127.0.0.1:8000/live/attack-summary")
         .then((res) => setSummary(res.data))
         .catch((err) => console.error(err));
 
       axios
-        .get("http://127.0.0.1:8000/alerts")
+        .get("http://127.0.0.1:8000/live/alerts")
         .then((res) => {
           const newAlerts = res.data.alerts || [];
           setAlerts(newAlerts.slice(-300));
@@ -446,13 +453,21 @@ function App() {
         .catch((err) => console.error(err));
 
       axios
+        .get("http://127.0.0.1:8000/live/flows")
+        .then((res) => {
+          const flows = res.data.flows || [];
+          setLiveFlows(flows.slice(0, 300));
+        })
+        .catch((err) => console.error(err));
+
+      axios
         .post("http://127.0.0.1:8000/live/start")
         .catch((err) => console.error("Live capture start failed", err));
     };
 
     const fetchSummary = () => {
       axios
-        .get("http://127.0.0.1:8000/attack-summary")
+        .get("http://127.0.0.1:8000/live/attack-summary")
         .then((res) => setSummary(res.data))
         .catch((err) => console.error(err));
 
@@ -475,6 +490,14 @@ function App() {
             interfaces: res.data.interfaces || [],
             reason: res.data.reason || "unknown",
           });
+        })
+        .catch((err) => console.error(err));
+
+      axios
+        .get("http://127.0.0.1:8000/live/flows")
+        .then((res) => {
+          const flows = res.data.flows || [];
+          setLiveFlows(flows.slice(0, 300));
         })
         .catch((err) => console.error(err));
     };
@@ -750,6 +773,21 @@ function App() {
                     Signal Time: {new Date(dashboardSignal.signal_time).toLocaleString()}
                   </p>
                 </>
+              ) : latestLiveFlowMovement ? (
+                <>
+                  <p className="dashboard-signal-main">
+                    Live Flow: {latestLiveFlowMovement.source_ip}:{latestLiveFlowMovement.source_port || 0} -&gt; {latestLiveFlowMovement.destination_ip}:{latestLiveFlowMovement.destination_port || 0}
+                  </p>
+                  <p className="dashboard-signal-meta">
+                    Protocol: {latestLiveFlowMovement.protocol || "N/A"} | Packet Length: {latestLiveFlowMovement.packet_length || 0} bytes
+                  </p>
+                  <p className="dashboard-signal-meta">
+                    Flow Packets: {latestLiveFlowMovement.packets_in_flow || 0} | Flow Bytes: {latestLiveFlowMovement.bytes_in_flow || 0}
+                  </p>
+                  <p className="dashboard-signal-time">
+                    Signal Time: {latestLiveFlowMovement.timestamp ? new Date(latestLiveFlowMovement.timestamp).toLocaleString() : "N/A"}
+                  </p>
+                </>
               ) : (
                 <p className="dashboard-signal-meta">No intrusion signal yet. Open Alerts to inspect and signal one to dashboard.</p>
               )}
@@ -842,7 +880,7 @@ function App() {
               </ResponsiveContainer>
             </div>
 
-            <AttackGraph alerts={alerts} />
+            <AttackGraph alerts={alerts} flows={liveFlows} />
             <GroupedAttack />
             <AttackTimeline alerts={alerts} />
             <AttackerProfiles />
@@ -861,7 +899,7 @@ function App() {
           <div className="card" style={{ marginTop: "20px" }}>
             <h3>Network Topology</h3>
             <p>Topology view coming next.</p>
-            <AttackGraph alerts={alerts} />
+            <AttackGraph alerts={alerts} flows={liveFlows} />
           </div>
         )}
 

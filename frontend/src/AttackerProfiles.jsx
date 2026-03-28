@@ -7,7 +7,7 @@ function AttackerProfiles() {
   useEffect(() => {
     const fetchProfiles = () => {
       axios
-        .get("http://127.0.0.1:8000/attacker-profiles")
+        .get("http://127.0.0.1:8000/live/attacker-profiles")
         .then((res) => {
           setProfiles(res.data.profiles || []);
         })

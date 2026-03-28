@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-function AttackGraph({ alerts = [] }) {
+function AttackGraph({ alerts = [], flows = [] }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [canvasSize, setCanvasSize] = useState({ width: 900, height: 360 });
 
   const graphModel = useMemo(() => {
-    const withTimestamps = alerts
+    const streamSource = flows.length > 0 ? flows : alerts;
+
+    const withTimestamps = streamSource
       .map((alert) => ({
         ...alert,
         parsedTime: alert.timestamp ? new Date(alert.timestamp).getTime() : 0,
@@ -131,10 +133,17 @@ function AttackGraph({ alerts = [] }) {
         if (!src || !dst) return;
 
         let color = "#3b82f6";
-        if (alert.confidence >= 95) color = "#ef4444";
-        else if (alert.confidence >= 90) color = "#f59e0b";
-        else if (alert.confidence >= 80) color = "#38bdf8";
-        else color = "#22c55e";
+        if (typeof alert.confidence === "number") {
+          if (alert.confidence >= 95) color = "#ef4444";
+          else if (alert.confidence >= 90) color = "#f59e0b";
+          else if (alert.confidence >= 80) color = "#38bdf8";
+          else color = "#22c55e";
+        } else {
+          const protocol = String(alert.protocol || "").toUpperCase();
+          if (protocol === "TCP") color = "#22d3ee";
+          else if (protocol === "UDP") color = "#60a5fa";
+          else color = "#34d399";
+        }
 
         const isRecent = index >= edges.length - 12;
         const widthScale = 1 + Number(alert.confidence || 0) / 60;
@@ -205,7 +214,7 @@ function AttackGraph({ alerts = [] }) {
       if (edges.length === 0) {
         ctx.fillStyle = "#94a3b8";
         ctx.font = "14px Inter, sans-serif";
-        ctx.fillText("Waiting for live packet alerts...", width / 2 - 92, height / 2);
+        ctx.fillText("Waiting for live packet flow...", width / 2 - 90, height / 2);
       }
 
       offset += 1;
@@ -219,7 +228,7 @@ function AttackGraph({ alerts = [] }) {
 
   return (
     <div className="card attack-flow-card" style={{ marginTop: "20px" }} ref={containerRef}>
-      <h3>Attack Flow Visualization</h3>
+      <h3>Flow Visualisation</h3>
       <canvas ref={canvasRef}></canvas>
     </div>
   );
